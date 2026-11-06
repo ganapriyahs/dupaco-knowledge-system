@@ -1,0 +1,11 @@
+results/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+snapshots/0*/
+snapshots_zip/
+snapshots/
+venv/
+results/
+.DS_Store
