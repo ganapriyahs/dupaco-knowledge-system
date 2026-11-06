@@ -1,14 +1,10 @@
 """
 Knowledge system for the Dupaco snapshots.
 
-Step 2: keep every snapshot whole, so as_of questions can use the right one.
-Step 3: clean page text and split it into row-sized chunks.
-Step 4: BM25 keyword search over the chunks, one index per snapshot.
-Step 6: page-authority weights and no tiny chunks.
-Step 7: rate pages only boosted for rate questions; no page title on table rows.
-Step 8: stopwords and plural stripping in the tokenizer.
-Step 9: answer from the top 3 chunks, plus the chunk after the best one.
-Step 11: conflicts() compares table rows across pages and trusts the most authoritative page.
+Retrieval: BM25 over row- and paragraph-sized chunks, one index per snapshot.
+as_of: answers come from the newest snapshot taken on or before the date.
+Conflicts: table rows compared across pages, most authoritative page wins.
+Links: link questions are answered from the site's own link text (anchor index).
 """
 import collections
 import math
@@ -32,6 +28,11 @@ PLAIN_NUM = re.compile(r"\$?\s*[\d,]+(\.\d+)?")
 DATE = re.compile(r"effective as of\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
 YEARS = re.compile(r"(20\d\d)\s*[–-]\s*(\d\d)\b")
 GENERIC = {"loan", "rate", "dupaco", "account"}
+LINK = re.compile(r"(?<!!)\[([^\]]{2,80})\]\((https?://[^)\s]+)\)")
+BAD_LINK = re.compile(r"/hubfs/|\.(png|jpe?g|svg|gif|pdf|webp)(\?|$)|/tag/|/author/|youtu\.be|facebook|instagram|linkedin|twitter", re.I)
+LINK_STOP = {"link", "url", "website", "page", "use", "dupaco", "site", "web", "address"}
+LINK_WORDS = {"link", "url", "website", "page", "locator"}
+ACTION_WORDS = {"join", "apply", "open", "enroll", "register"}
 RATE_WORDS = {"rate", "apr", "apy", "dividend", "yield", "interest"}
 STOP = {
     "a", "an", "the", "is", "are", "was", "were", "be", "what", "whats", "do", "does", "did",
@@ -181,6 +182,50 @@ def find_conflicts(pages):
     return out
 
 
+class LinkIndex:
+    """Which pages link where, and with what link text (e.g. 'Become a member' -> join.dupaco.com)."""
+
+    def __init__(self, pages):          # pages: {url: markdown}
+        anchors = collections.defaultdict(Counter)
+        self.pages = collections.defaultdict(set)
+        for url, md in pages.items():
+            for text, target in LINK.findall(clean(md)):
+                target = target.split('"')[0]
+                if target.endswith("#") or BAD_LINK.search(target):
+                    continue
+                base = target.split("#")[0].split("?")[0].rstrip("/")
+                anchors[base][text.lower().strip()] += 1
+                self.pages[base].add(url)
+        self.toks = {}
+        self.df = Counter()
+        for base, c in anchors.items():
+            t = Counter(w for a, n in c.items() for w in tokens(a) for _ in range(n))
+            self.toks[base] = t
+            for w in t:
+                self.df[w] += 1
+        self.n = max(len(self.toks), 1)
+
+    def search(self, question, k=3):
+        q = {w for w in tokens(question) if w not in LINK_STOP}
+        rate_q = is_rate_question(question)
+        scored = []
+        for base, t in self.toks.items():
+            hit = [w for w in q if w in t]
+            if not hit:
+                continue
+            s = sum(math.log(1 + self.n / self.df[w]) for w in hit) / (1 + 0.15 * len(t)) ** 0.5
+            s *= 1 + math.log(len(self.pages[base]))     # linked from many pages = important
+            s *= authority(base, rate_q)                 # blog and news targets count less
+            scored.append((s, base))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        return [b for _, b in scored[:k]]
+
+
+def wants_link(question):
+    t = set(tokens(question))
+    return bool(t & LINK_WORDS) or (bool(t & ACTION_WORDS) and question.lower().startswith("how"))
+
+
 class BM25:
     def __init__(self, docs, k1=1.5, b=0.75):
         self.docs = docs
@@ -213,6 +258,7 @@ class Knowledge:
     def __init__(self):
         self.snaps = []
         self.index = {}
+        self.links = {}
 
     def ingest(self, snapshot: Snapshot) -> None:
         pages = {p.url: p for p in snapshot.pages}
@@ -222,6 +268,7 @@ class Knowledge:
             for text in chunk_page(p.title, p.markdown):
                 docs.append((p.url, text))
         self.index[snapshot.snapshot_id] = BM25(docs)
+        self.links[snapshot.snapshot_id] = LinkIndex({p.url: p.markdown for p in snapshot.pages})
 
     def site_as_of(self, as_of=None):
         if as_of is None:
@@ -244,6 +291,11 @@ class Knowledge:
                 order.append(i)
         text = " ... ".join(bm.docs[i][1] for i in order)[:MAX_ANSWER]
         urls = list(dict.fromkeys(bm.docs[i][0] for i in order))
+        if wants_link(question):
+            links = self.links[sid].search(question)
+            if links:
+                text = "Relevant links: " + ", ".join(links) + " ... " + text
+                urls = links + [u for u in urls if u not in links]
         return Answer(text=text, sources=[Source(url=u, snapshot_id=sid) for u in urls])
 
     def conflicts(self):
