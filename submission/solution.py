@@ -8,6 +8,7 @@ Step 11: conflicts() compares table rows across pages and trusts the most author
 Step 18: say "I don't know" when the best chunks cannot answer (no rate shown, or the named branch is missing).
 Step 19: footnote digits are stripped from words ("APR1" matches "apr").
 Step 20: list questions ("rates", "cards", ...) get up to 6 chunks instead of 3.
+Step 21: blog and news pages are only heavily down-weighted for rate questions.
 """
 import collections
 import math
@@ -81,7 +82,7 @@ def authority(url, rate_question):
     if path.startswith(("/calculators", "/business-calculators")):
         return 0.3
     if path.startswith(("/learn", "/newsroom")):
-        return 0.5
+        return 0.5 if rate_question else 0.65
     return 1.0
 
 
