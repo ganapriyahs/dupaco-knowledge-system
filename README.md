@@ -259,7 +259,6 @@ submission/NOTES.md       design notes and known gaps
 submission/requirements.txt
 harness/                  the scorer supplied with the assignment
 eval/public_eval.jsonl    the 40 practice questions
-KIT_README.md             the original assignment brief
 ```
 
 Website snapshots and API keys are intentionally not in the repository.
