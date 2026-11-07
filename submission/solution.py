@@ -9,6 +9,7 @@ Step 18: say "I don't know" when the best chunks cannot answer (no rate shown, o
 Step 19: footnote digits are stripped from words ("APR1" matches "apr").
 Step 20: list questions ("rates", "cards", ...) get up to 6 chunks instead of 3.
 Step 21: blog and news pages are only heavily down-weighted for rate questions.
+Step 22: chunks that mention every capitalised name in the question get a boost.
 """
 import collections
 import math
@@ -39,6 +40,9 @@ LINK_WORDS = {"link", "url", "website", "page", "locator"}
 ACTION_WORDS = {"join", "apply", "open", "enroll", "register"}
 TIME = re.compile(r"\d{1,2}(:\d\d)?\s*(a\.?m\.?|p\.?m\.?)\b|\bnoon\b", re.I)
 HOUR_WORDS = {"hour"}
+CAPS = re.compile(r"(?<!^)(?<![.?!] )\b[A-Z][a-zA-Z-]{3,}")
+NAME_SKIP = {"dupaco", "credit", "union"}
+NAME_BOOST = 1.6
 PLURAL_ASK = re.compile(r"\b(rates|cards|accounts|certificates|loans|what .* (?:do you|does dupaco) offer)\b", re.I)
 WIDE_K = 6
 WIDE_ANSWER = 1800
@@ -252,6 +256,7 @@ class BM25:
 
     def search(self, query, k=5, rate_question=False):
         q = tokens(query)
+        names = {t for w in CAPS.findall(query) for t in tokens(w)} - NAME_SKIP
         hours = bool(set(q) & HOUR_WORDS)          # an hours question needs a chunk with times in it
         scored = []
         for i, c in enumerate(self.tf):
@@ -265,6 +270,8 @@ class BM25:
                     s += self.idf[w] * f * (self.k1 + 1) / (f + self.k1 * norm)
             if s > 0:
                 s *= authority(self.docs[i][0], rate_question)
+                if names and names <= set(c):
+                    s *= NAME_BOOST
                 scored.append((s, i))
         scored.sort(key=lambda x: (-x[0], x[1]))
         return scored[:k]
