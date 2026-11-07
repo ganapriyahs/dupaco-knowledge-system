@@ -7,6 +7,7 @@ Step 14: link questions are answered from the site's own link text (anchor index
 Step 11: conflicts() compares table rows across pages and trusts the most authoritative page.
 Step 18: say "I don't know" when the best chunks cannot answer (no rate shown, or the named branch is missing).
 Step 19: footnote digits are stripped from words ("APR1" matches "apr").
+Step 20: list questions ("rates", "cards", ...) get up to 6 chunks instead of 3.
 """
 import collections
 import math
@@ -37,6 +38,9 @@ LINK_WORDS = {"link", "url", "website", "page", "locator"}
 ACTION_WORDS = {"join", "apply", "open", "enroll", "register"}
 TIME = re.compile(r"\d{1,2}(:\d\d)?\s*(a\.?m\.?|p\.?m\.?)\b|\bnoon\b", re.I)
 HOUR_WORDS = {"hour"}
+PLURAL_ASK = re.compile(r"\b(rates|cards|accounts|certificates|loans|what .* (?:do you|does dupaco) offer)\b", re.I)
+WIDE_K = 6
+WIDE_ANSWER = 1800
 RATE_WORDS = {"rate", "apr", "apy", "dividend", "yield", "interest"}
 DONT_KNOW = "I don't know - the website doesn't list that. Please contact Dupaco directly."
 STOP = {
@@ -300,7 +304,8 @@ class Knowledge:
             if key is not None:
                 seen.add(key)
             hits.append((s_, i_))
-        hits = hits[:TOP_K]
+        wide = bool(PLURAL_ASK.search(question)) and "$" not in question
+        hits = hits[:WIDE_K if wide else TOP_K]
         if not hits:
             return Answer(text="I don't know.", confident=False)
         best = hits[0][1]
@@ -310,7 +315,7 @@ class Knowledge:
         for _, i in hits[1:]:
             if i not in order:
                 order.append(i)
-        text = " ... ".join(bm.docs[i][1] for i in order)[:MAX_ANSWER]
+        text = " ... ".join(bm.docs[i][1] for i in order)[:WIDE_ANSWER if wide else MAX_ANSWER]
         if self.unsupported(question, bm, order, text):
             return Answer(text=DONT_KNOW, confident=False)
         urls = list(dict.fromkeys(bm.docs[i][0] for i in order))
