@@ -1,10 +1,10 @@
 """
 Knowledge system for the Dupaco snapshots.
 
-Retrieval: BM25 over row- and paragraph-sized chunks, one index per snapshot.
-as_of: answers come from the newest snapshot taken on or before the date.
-Conflicts: table rows compared across pages, most authoritative page wins.
-Links: link questions are answered from the site's own link text (anchor index).
+Step 17: rate answers show distinct rates (no three copies of the same percentage).
+Step 16: hours questions only consider chunks that contain times.
+Step 14: link questions are answered from the site's own link text (anchor index).
+Step 11: conflicts() compares table rows across pages and trusts the most authoritative page.
 """
 import collections
 import math
@@ -285,7 +285,17 @@ class Knowledge:
     def answer(self, question, as_of=None):
         _, sid, _ = self.site_as_of(as_of)
         bm = self.index[sid]
-        hits = bm.search(question, k=TOP_K, rate_question=is_rate_question(question))
+        raw = bm.search(question, k=12, rate_question=is_rate_question(question))
+        hits, seen = [], set()
+        for s_, i_ in raw:
+            m = PCT.search(bm.docs[i_][1])
+            key = m.group(0) if m else None
+            if key is not None and key in seen and "$" not in question:
+                continue          # same rate as a row we already picked: skip it
+            if key is not None:
+                seen.add(key)
+            hits.append((s_, i_))
+        hits = hits[:TOP_K]
         if not hits:
             return Answer(text="I don't know.", confident=False)
         best = hits[0][1]
