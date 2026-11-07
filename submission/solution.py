@@ -39,6 +39,7 @@ STOP = {
     "can", "could", "would", "you", "your", "yours", "i", "me", "my", "we", "our", "to", "of",
     "for", "on", "in", "at", "and", "or", "how", "much", "many", "tell", "give", "like", "know",
     "please", "get", "there", "it", "this", "that", "with", "about", "s", "have", "has",
+    "general",
 }
 
 
