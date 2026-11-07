@@ -1,85 +1,265 @@
-# Hackathon: Build a Knowledge System That Knows What's True *Now*
+# Dupaco Knowledge System
 
-## The problem in one minute
+A question-answering system that reads repeated crawls of a credit union's website and answers like a careful human expert: the **current** value, the **right tier**, a **source**, and an honest **"I don't know"** when the site doesn't say.
 
-Our assistant answers credit-union members' questions ("What's the 6-month certificate rate?", "How much is a lost debit card?") using the credit union's own website.
+Pure Python standard library. No model calls, no network calls, nothing to install. Answers come back in about 0.2 seconds.
 
-We download (crawl) that website again and again over time. Each download is a **snapshot**. Websites are messy:
-
-- A rate changes, but an old page or PDF still shows the old number.
-- A promotion ends, but its page is never taken down.
-- One page lists the **rate**, another the **APY**, and they look like they disagree.
-- A table has tiers (by balance, by term). Read it carelessly and every tier looks like a conflict.
-- Old newsletters and press releases describe offers from years ago.
-
-When we combined these snapshots, our system **gave members wrong or out-of-date answers**. Every eval question in this kit comes from a real problem like that.
-
-**Your mission:** build a system that reads the snapshots in date order and answers questions the way a careful human expert would: with the **current** value, the **right** tier, a **source**, and an honest "I don't know" when the site doesn't say.
-
-## What's in the box
-
-```
-snapshots_zip/           the five website downloads, one zip per date (oldest first)
-snapshots/README.md      what each download is and what changed between them
-eval/public_eval.jsonl   40 practice questions with expected answers
-starter/solution.py      a working (but naive) solution to copy from
-harness/                 the scorer we will use (same one you can run)
-```
-
-**You don't need to unzip anything.** The first time you run the scorer (below), it unpacks the zips into `snapshots/`, with one folder per download, each holding a `manifest.json` (url, title, date) and the pages as `pages/*.md`. After that the folders are there to browse. If you'd rather look first, unzip them yourself into `snapshots/`; the scorer leaves existing folders alone.
-
-## What you must hand in
-
-A folder with a file called `solution.py`, containing a `build()` function that returns an object with **three methods**:
-
-| Method | What it does |
+| Practice-set result | |
 |---|---|
-| `ingest(snapshot)` | We call it once per snapshot, oldest first. Learn from it. |
-| `answer(question, as_of=None)` | Answer a member's question. Without `as_of`, answer from the newest snapshot. With a date, answer as the website stood on that day. |
-| `conflicts()` | List every place where the website contradicts itself, which value you believe is right, and why. |
+| QA score | **0.82** (started at 0.09) |
+| Stale or wrong-tier values returned | **0** |
+| Reworded-question and repeat consistency | **1.0 / 1.0** |
+| p95 answer latency | **~0.2 s** |
+| Time to ingest all 5 snapshots (~3,300 pages) | **~3 s** |
 
-The exact shapes are defined in `harness/contract.py`; `starter/solution.py` already follows them. **Don't rename anything.** We plug your folder straight into our scorer.
+> Scores are from the 40 public practice questions with the kit's own scorer. The hidden question set may differ.
 
-You can use any tools you like inside: search, embeddings, a graph, an LLM, plain rules. Add a `requirements.txt` if you need packages, and say in a short `NOTES.md` which API keys (if any) you need.
+---
 
-## How to check your work
+## The problem
 
-From the top folder of this kit, run:
+The website is downloaded again and again; each download is a **snapshot**. Websites are messy, and a naive system gives wrong answers:
+
+- A rate changes, but an old page still shows the old number.
+- A table has tiers (by balance, by term, by model year), and reading it carelessly mixes them up.
+- Blog posts and calculators quote old or example rates next to the real rate table.
+- Sometimes the site simply doesn't say, and the right answer is "I don't know".
+
+## Architecture
+
+```
+   Snapshot 1 (May)    Snapshot 2    Snapshot 3    Snapshot 4    Snapshot 5 (Sep, latest)
+         |                  |             |             |                 |
+         +------------------+------+------+-------------+-----------------+
+                                   |
+                                   v
+              +------------------------------------------------+
+              |  ingest(snapshot)   runs once per snapshot     |
+              |                                                |
+              |   1. Chunk every page                          |
+              |        one chunk per table row                 |
+              |        one chunk per paragraph                 |
+              |   2. Build a BM25 search index                 |
+              |   3. Build a link index                        |
+              |        (anchor text -> target URL)             |
+              +------------------------+-----------------------+
+                                       |
+                                       v
+              +------------------------------------------------+
+              |  Knowledge store: ONE separate index           |
+              |  per snapshot, never merged                    |
+              +----------+----------------------------+--------+
+                         |                            |
+                         v                            v
+        +-------------------------------+  +---------------------------------+
+        |  answer(question, as_of)      |  |  conflicts()                    |
+        |                               |  |                                 |
+        |  returns: text, sources,      |  |  returns: topic, values,        |
+        |  confident                    |  |  sources, resolution, reason    |
+        +-------------------------------+  +---------------------------------+
+```
+
+`as_of` selects the newest snapshot taken on or before that date, and with no `as_of` the latest snapshot is used. Because snapshots are never merged, an old value cannot leak into a current answer.
+
+## How a question is answered
+
+```
+                          Question (+ optional as_of)
+                                      |
+                                      v
+                    +------------------------------------+
+                    | 1. Pick the snapshot               |
+                    |    newest one taken <= as_of       |
+                    +-----------------+------------------+
+                                      |
+                                      v
+                    +------------------------------------+
+                    | 2. Tokenise                        |
+                    |    drop stop words, strip plurals, |
+                    |    strip footnote digits           |
+                    |    ("APR1" becomes "apr")          |
+                    +-----------------+------------------+
+                                      |
+                                      v
+                          +-----------------------+
+                          | Hours question?       |
+                          +-----+-----------+-----+
+                            yes |           | no
+                                v           |
+              +----------------------+      |
+              | keep only chunks     |      |
+              | that contain a time  |      |
+              | of day               |      |
+              +----------+-----------+      |
+                         |                  |
+                         +--------+---------+
+                                  |
+                                  v
+                    +------------------------------------+
+                    | 3. Score every chunk with BM25     |
+                    +-----------------+------------------+
+                                      |
+                                      v
+                    +------------------------------------+
+                    | 4. Adjust each score               |
+                    |                                    |
+                    |  page authority                    |
+                    |    rate tables UP for rate Qs      |
+                    |    blog / news / calculators DOWN  |
+                    |  name boost                        |
+                    |    chunk mentions every            |
+                    |    capitalised name in the Q       |
+                    +-----------------+------------------+
+                                      |
+                                      v
+                    +------------------------------------+
+                    | 5. Choose chunks                   |
+                    |    skip rows that repeat a rate    |
+                    |    already picked (unless the Q    |
+                    |    names a dollar tier)            |
+                    |    keep top 3  (6 for list Qs)     |
+                    |    + the chunk right after the     |
+                    |      best one                      |
+                    +-----------------+------------------+
+                                      |
+                                      v
+                       +-----------------------------+
+                       | Can these chunks actually   |
+                       | answer the question?        |
+                       +---+-------------------+-----+
+                       no  |                   | yes
+                           v                   v
+         +-------------------------+   +--------------------------+
+         | "I don't know"          |   | Link question?           |
+         | confident = False       |   |   yes: prepend the best  |
+         | no numbers in the text  |   |   matching link targets  |
+         +-------------------------+   +------------+-------------+
+          triggers:                                 |
+           - rate question, no                      v
+             percentage in the text       +--------------------------+
+           - hours question about a       | Answer + cited sources   |
+             place the chunks never       +--------------------------+
+             mention
+```
+
+### The decisions that mattered most
+
+| Decision | Why |
+|---|---|
+| One chunk per **table row**, prefixed with the section label and column headers | A row such as "Auto and Motorcycle Loans, 2024-27 Model Year, 60 Months, 5.39%" is self-contained, so the right tier can be retrieved on its own. |
+| Page-authority weights from real URL paths | The `/rates` tables are the source of truth for rate questions. Blog posts, news and calculators repeat stale or example numbers. |
+| Skip repeated rates when picking chunks | Near-identical rows would otherwise fill every slot with the same rate and hide other tiers. |
+| Decline when the evidence can't answer | A rate question whose chosen text contains no percentage, or an hours question about a place the chunks never mention, is better answered with "I don't know" than with a nearby number. |
+| One index per snapshot | Time-aware answers with zero cross-contamination. |
+
+## How conflicts are found
+
+```
+              Newest snapshot, every page
+                          |
+                          v
+        +------------------------------------+
+        | Read every table row that has a    |
+        | percentage                         |
+        +-----------------+------------------+
+                          |
+                          v
+        +------------------------------------+
+        | Key each row by its label cells    |
+        |   plain numbers dropped            |
+        |   dollar-tier cells KEPT           |
+        |   model-year ranges normalised     |
+        +-----------------+------------------+
+                          |
+                          v
+        +------------------------------------+
+        | Group rows with the same key       |
+        | across different pages             |
+        +-----------------+------------------+
+                          |
+                          v
+            +-------------------------------+
+            | Same context words, years     |
+            | overlap, percentage differs?  |
+            +------+----------------+-------+
+              no   |                | yes
+                   v                v
+        +----------------+  +----------------------------------+
+        | Not a conflict |  | Rank the pages                   |
+        +----------------+  |   1. page authority              |
+                            |      (rate tables beat           |
+                            |       calculators and promos)    |
+                            |   2. latest "effective as of"    |
+                            |      date                        |
+                            +----------------+-----------------+
+                                             |
+                                             v
+                            +----------------------------------+
+                            | One Conflict per fact:           |
+                            |   every disagreeing value        |
+                            |   every page that holds it       |
+                            |   the winner, and the reason     |
+                            +----------------------------------+
+```
+
+Tier cells are kept in the key so that different balance tiers are never reported as a contradiction. Model-year ranges such as 2023-26 and 2024-27 are treated as the same product when they overlap by three years or more.
+
+## How the score improved
+
+Each step was measured against the practice set before it was kept. Several ideas were tried and **rejected** because they scored worse or triggered stale-value hits (for example a boost for any chunk containing a percentage, and answering with five chunks).
+
+| Step | What changed | QA score |
+|---|---|---|
+| Baseline | Starter solution | 0.09 |
+| Per-snapshot indexes | Answers come from the right point in time | 0.13 |
+| Row and paragraph chunking with BM25 | Table rows become self-contained chunks | 0.26 |
+| Page-authority weighting and tuning | Rate tables beat blogs, news and calculators | 0.49 |
+| Link questions | Anchor-text index for "where do I..." questions | 0.52 |
+| Hours filter | Hours questions only consider chunks with times | 0.60 |
+| Distinct rates | Near-identical rows no longer crowd out other tiers | 0.65 |
+| "I don't know" rules | Decline when the evidence can't answer | 0.74 |
+| Footnote-digit fix | "APR1" now matches "apr" | 0.76 |
+| Wider list answers | 6 chunks for "rates", "cards", "accounts" | 0.79 |
+| Softer news penalty for non-rate questions | Press releases can answer entity questions | 0.81 |
+| Name boost | Capitalised names in the question must appear | **0.82** |
+
+Conflict detection is scored as a separate pillar, so it does not appear in this QA column.
+
+## Known limits
+
+Listed honestly, and also in [`submission/NOTES.md`](submission/NOTES.md):
+
+- Answers are built from the top few chunks rather than a single extracted value. On the practice set this returned zero stale values, but a chunk with a correct answer could in principle sit beside a stale number on a larger question set.
+- Conflicts that exist **only in prose** (for example "22 branches" versus "24 branches") are not detected. Only table rows are compared.
+- Retrieval is word-based, so questions that rely on meaning rather than shared words ("recognition" versus "recognized") can miss. No embeddings are used.
+- A few facts are spread across two small chunks and only one is retrieved (for example the states in the membership area).
+- The "no percentage means decline" rule would wrongly decline a rate question whose true answer is a dollar fee. No such case appears in the practice set.
+- Tuning constants were chosen against the 40 practice questions. Nearby values give the same results, but they are not validated on unseen questions.
+
+## Run it
+
+Requires Python 3.9 or newer. Python 3.11 and 3.13 were both tested.
 
 ```bash
-python harness/run_eval.py --submission starter --eval eval/public_eval.jsonl
+# from the top folder, with the snapshot zips in snapshots_zip/
+python harness/run_eval.py --submission submission --eval eval/public_eval.jsonl
 ```
 
-The first run takes a few extra seconds while it unpacks the snapshots. Then it loads all five downloads into the starter, asks the 40 practice questions, and prints your score. To test your own solution, point `--submission` at your folder.
+Optionally check conflict scoring against a gold list:
 
-The starter scores low on purpose. Watch your score go up as you improve. Needs Python 3.9 or newer.
+```bash
+python harness/run_eval.py --submission submission --eval eval/public_eval.jsonl --conflicts-gold mini_gold.json
+```
 
-## How you will be scored
+## Repository layout
 
-We run a **larger, hidden question set** with the same format and the same scorer. Four things count:
+```
+submission/solution.py    the whole system (build, ingest, answer, conflicts)
+submission/NOTES.md       design notes and known gaps
+submission/requirements.txt
+harness/                  the scorer supplied with the assignment
+eval/public_eval.jsonl    the 40 practice questions
+KIT_README.md             the original assignment brief
+```
 
-| | Weight | What we look for |
-|---|---|---|
-| **Accuracy** | 55% | The current, correctly-tiered value is in your answer. Repeating an old or wrong value scores **zero** for that question, even if the right value is also there, so hedging by listing every number doesn't pay. Citing the right page earns a little extra. When the site doesn't say, the right answer is "I don't know". |
-| **Conflicts** | 15% | How many real contradictions you list in `conflicts()`, and whether you picked the right winner. |
-| **Consistency** | 15% | The same question asked in different words gets the same answer, and asking twice gives the same answer. |
-| **Speed** | 15% | How quickly you answer. Most answers in 2 seconds or less earns full marks; it drops to zero at 20 seconds. |
-
-Speed and consistency are **multiplied by your accuracy**: a fast or consistent system that's wrong doesn't earn those points. Ingest (loading the snapshots) isn't timed for scoring, but must finish within 30 minutes.
-
-Hidden questions include re-worded versions of the public ones, "as of" date questions, and questions about things that *changed* between snapshots.
-
-## A simple way to approach it
-
-1. **Read the snapshots yourself first.** (Run the scorer once to unpack them, or unzip `snapshots_zip/`.) Pick five topics (a rate, a fee, branch hours) and follow them across the dates. You'll quickly see the kinds of mess.
-2. **Keep history, not just the latest copy.** Remember *when* you saw each fact and *where*.
-3. **Decide what "current" means.** Is the newer page right? Does an official rate sheet beat a blog post? What about an expired promotion? Write your rules down.
-4. **Respect qualifiers.** "6-month" vs "12-month", "rate" vs "APY", "Prime Checking" vs "Prime Business Checking". These are different facts, not conflicts.
-5. **Be honest.** If the website doesn't say, don't guess.
-6. **Run the public eval often.** Read the questions you miss, not just the score.
-
-## Rules
-
-- Use only the snapshots provided to answer questions. No live website calls.
-- Each `answer` call must finish within 60 seconds.
-- The data is a real credit union's public website, shared for this event only. Don't redistribute it.
+Website snapshots and API keys are intentionally not in the repository.
