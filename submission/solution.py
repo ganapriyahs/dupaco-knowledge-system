@@ -33,6 +33,8 @@ BAD_LINK = re.compile(r"/hubfs/|\.(png|jpe?g|svg|gif|pdf|webp)(\?|$)|/tag/|/auth
 LINK_STOP = {"link", "url", "website", "page", "use", "dupaco", "site", "web", "address"}
 LINK_WORDS = {"link", "url", "website", "page", "locator"}
 ACTION_WORDS = {"join", "apply", "open", "enroll", "register"}
+TIME = re.compile(r"\d{1,2}(:\d\d)?\s*(a\.?m\.?|p\.?m\.?)\b|\bnoon\b", re.I)
+HOUR_WORDS = {"hour"}
 RATE_WORDS = {"rate", "apr", "apy", "dividend", "yield", "interest"}
 STOP = {
     "a", "an", "the", "is", "are", "was", "were", "be", "what", "whats", "do", "does", "did",
@@ -240,8 +242,11 @@ class BM25:
 
     def search(self, query, k=5, rate_question=False):
         q = tokens(query)
+        hours = bool(set(q) & HOUR_WORDS)          # an hours question needs a chunk with times in it
         scored = []
         for i, c in enumerate(self.tf):
+            if hours and not TIME.search(self.docs[i][1]):
+                continue
             s = 0.0
             for w in q:
                 if w in c:
