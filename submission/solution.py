@@ -6,6 +6,7 @@ Step 16: hours questions only consider chunks that contain times.
 Step 14: link questions are answered from the site's own link text (anchor index).
 Step 11: conflicts() compares table rows across pages and trusts the most authoritative page.
 Step 18: say "I don't know" when the best chunks cannot answer (no rate shown, or the named branch is missing).
+Step 19: footnote digits are stripped from words ("APR1" matches "apr").
 """
 import collections
 import math
@@ -51,6 +52,8 @@ def tokens(text):
     out = []
     for w in WORD.findall(text.lower()):
         w = w.strip(".")
+        if len(w) > 3 and w[-1].isdigit() and w[:-1].isalpha():
+            w = w[:-1]                       # "apr1" -> "apr" (footnote marker)
         if not w or w in STOP:
             continue
         if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
