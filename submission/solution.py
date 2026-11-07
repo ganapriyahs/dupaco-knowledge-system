@@ -5,6 +5,7 @@ Step 17: rate answers show distinct rates (no three copies of the same percentag
 Step 16: hours questions only consider chunks that contain times.
 Step 14: link questions are answered from the site's own link text (anchor index).
 Step 11: conflicts() compares table rows across pages and trusts the most authoritative page.
+Step 18: say "I don't know" when the best chunks cannot answer (no rate shown, or the named branch is missing).
 """
 import collections
 import math
@@ -36,6 +37,7 @@ ACTION_WORDS = {"join", "apply", "open", "enroll", "register"}
 TIME = re.compile(r"\d{1,2}(:\d\d)?\s*(a\.?m\.?|p\.?m\.?)\b|\bnoon\b", re.I)
 HOUR_WORDS = {"hour"}
 RATE_WORDS = {"rate", "apr", "apy", "dividend", "yield", "interest"}
+DONT_KNOW = "I don't know - the website doesn't list that. Please contact Dupaco directly."
 STOP = {
     "a", "an", "the", "is", "are", "was", "were", "be", "what", "whats", "do", "does", "did",
     "can", "could", "would", "you", "your", "yours", "i", "me", "my", "we", "our", "to", "of",
@@ -306,6 +308,8 @@ class Knowledge:
             if i not in order:
                 order.append(i)
         text = " ... ".join(bm.docs[i][1] for i in order)[:MAX_ANSWER]
+        if self.unsupported(question, bm, order, text):
+            return Answer(text=DONT_KNOW, confident=False)
         urls = list(dict.fromkeys(bm.docs[i][0] for i in order))
         if wants_link(question):
             links = self.links[sid].search(question)
@@ -313,6 +317,18 @@ class Knowledge:
                 text = "Relevant links: " + ", ".join(links) + " ... " + text
                 urls = links + [u for u in urls if u not in links]
         return Answer(text=text, sources=[Source(url=u, snapshot_id=sid) for u in urls])
+
+    def unsupported(self, question, bm, order, text):
+        """True when the best chunks cannot actually answer: no rate shown, or the named place is missing."""
+        q = set(tokens(question))
+        if q & RATE_WORDS and not PCT.search(text):
+            return True
+        if q & HOUR_WORDS:
+            body = " ".join(bm.docs[i][1] for i in order).lower()
+            rare = [w for w in q if bm.idf.get(w, 0) > 7.5 and w not in HOUR_WORDS]
+            if any(w not in body for w in rare):
+                return True
+        return False
 
     def conflicts(self):
         _, _, pages = self.snaps[-1]          # contradictions in the newest snapshot
